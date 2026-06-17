@@ -1,0 +1,127 @@
+services:
+  # ── MySQL 8.0 ──
+  mysql:
+    image: mysql:8.0
+    container_name: hot-topic-mysql
+    restart: unless-stopped
+    mem_limit: 768m
+    environment:
+      MYSQL_ROOT_PASSWORD: wisdom123
+      MYSQL_DATABASE: wisdom_view
+      TZ: Asia/Shanghai
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --default-authentication-plugin=mysql_native_password
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./backend/configs/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./wisdom_view.sql:/docker-entrypoint-initdb.d/02-data.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-pwisdom123"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── Redis 7 ──
+  redis:
+    image: redis:7-alpine
+    container_name: hot-topic-redis
+    restart: unless-stopped
+    mem_limit: 128m
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Elasticsearch 8.x (single-node, security disabled for dev) ──
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+    container_name: hot-topic-es
+    restart: unless-stopped
+    mem_limit: 1536m
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - cluster.routing.allocation.disk.threshold_enabled=false
+    ports:
+      - "9201:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  # ── Backend (FastAPI) ──
+  backend:
+    build: ./backend
+    container_name: hot-topic-backend
+    restart: unless-stopped
+    mem_limit: 1g
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      - DEBUG=true
+      - SECRET_KEY=change-me-in-production
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_USER=root
+      - DB_PASSWORD=wisdom123
+      - DB_NAME=wisdom_view
+      - DB_POOL_SIZE=10
+      - DB_MAX_OVERFLOW=5
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - ES_HOST=http://elasticsearch:9200
+      - ES_INDEX_PREFIX=wisdom_view
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:-}
+      - LLM_MODEL=qwen-plus
+      - EMBEDDING_MODEL=text-embedding-v3
+      - EXPORT_DIR=/app/exports
+      - TEMPLATE_DIR=/app/templates
+      - CORS_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000","http://localhost:3001","http://127.0.0.1:3001"]
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./backend:/app
+      - backend_exports:/app/exports
+
+  # ── Frontend (Nuxt 4 dev server) ──
+  frontend:
+    build: ./frontend
+    container_name: hot-topic-frontend
+    restart: unless-stopped
+    mem_limit: 768m
+    depends_on:
+      - backend
+    environment:
+      - NUXT_API_TARGET=http://backend:8000
+      - HOST=0.0.0.0
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.nuxt
+
+volumes:
+  mysql_data:
+  redis_data:
+  es_data:
+  backend_exports:
